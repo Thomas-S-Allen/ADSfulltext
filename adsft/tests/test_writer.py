@@ -284,6 +284,23 @@ class TestWriteMetaFileWorker(test_base.TestUnit):
         content = reader.read_content(self.dict_item)
         self.assertEqual(self.dict_item['das'], content['das'])
 
+    def test_doi_link_arrays_are_stored_only_in_metadata_and_read_back(self):
+        self.dict_item['body_links'] = ['https://doi.org/10.1234/body']
+        self.dict_item['ack_links'] = ['https://doi.org/10.5678/credit']
+        writer.extract_content([self.dict_item])
+
+        with open(self.meta_file, 'r') as meta_file:
+            meta_dict = json.load(meta_file)
+
+        self.assertEqual(self.dict_item['body_links'], meta_dict['body_links'])
+        self.assertEqual(self.dict_item['ack_links'], meta_dict['ack_links'])
+        self.assertFalse(os.path.exists(self.bibcode_pair_tree + 'body_links.txt.gz'))
+        self.assertFalse(os.path.exists(self.bibcode_pair_tree + 'ack_links.txt.gz'))
+
+        content = reader.read_content(self.dict_item)
+        self.assertEqual(self.dict_item['body_links'], content['body_links'])
+        self.assertEqual(self.dict_item['ack_links'], content['ack_links'])
+
     def test_temporary_file_is_made_and_moved(self):
         """
         Tests the extract_content method. Checks that when the worker writes to

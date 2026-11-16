@@ -61,6 +61,42 @@ logger = setup_logging(__name__, proj_home=proj_home,
                         attach_stdout=config.get('LOG_STDOUT', False))
 
 
+DOI_PATTERN = re.compile(
+    r'(?<![A-Z0-9])10\s*\.\s*\d{4,9}\s*/\s*[-._;()/:A-Z0-9]+',
+    re.IGNORECASE,
+)
+DOI_DASHES = dict.fromkeys(
+    map(ord, u'\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d'),
+    u'-',
+)
+
+
+def extract_doi_links(text):
+    """Return canonical DOI URLs found in plaintext, in first-seen order."""
+    if not text:
+        return []
+
+    text = unicodedata.normalize('NFKC', text).translate(DOI_DASHES)
+    links = []
+    seen = set()
+
+    for match in DOI_PATTERN.finditer(text):
+        doi = re.sub(r'\s+', '', match.group(0))
+        doi = doi.rstrip('.,;:')
+
+        # A closing parenthesis belongs to the DOI only when it is balanced by
+        # an opening parenthesis within the DOI itself.
+        while doi.endswith(')') and doi.count(')') > doi.count('('):
+            doi = doi[:-1].rstrip('.,;:')
+
+        key = doi.lower()
+        if key and key not in seen:
+            seen.add(key)
+            links.append('https://doi.org/' + doi)
+
+    return links
+
+
 # ================================ CLASSES ======================================== #
 
 class StandardExtractorBasicText(object):
@@ -873,6 +909,37 @@ class StandardExtractorXML(object):
 
         return data_inner
 
+    def _extract_body_plaintext(self):
+        """Extract body text while omitting credits and structured back matter."""
+        excluded = set()
+        excluded_xpaths = (
+            META_CONTENT[self.meta_name]['acknowledgements']['xpath'] +
+            META_CONTENT[self.meta_name].get('das', {}).get('xpath', []) +
+            ['//ref-list', '//reference-list', '//bibliography', '//references',
+             '//*[@type="references"]', '//*[@sec-type="references"]',
+             '//acknowledgment', '//acknowledgement', '//acknowledgments',
+             '//acknowledgements']
+        )
+        for xpath in excluded_xpaths:
+            excluded.update(self.parsed_xml.xpath(xpath))
+
+        def itertext(node):
+            if node in excluded:
+                return
+            if node.text:
+                yield node.text
+            for child in node:
+                for value in itertext(child):
+                    yield value
+                if child.tail:
+                    yield child.tail
+
+        text = []
+        for xpath in META_CONTENT[self.meta_name]['fulltext']['xpath']:
+            for node in self.parsed_xml.xpath(xpath):
+                text.extend(itertext(node))
+        return ' '.join(text)
+
     def extract_multi_content(self, translate=True, decode=False, preferred_parser_names=None):
         """
         Extracts full text content from the XML article specified. It also
@@ -980,6 +1047,12 @@ class StandardExtractorXML(object):
                 meta_out[content_name] = "\n".join(all_text_content)
             elif len(all_text_content) > 0:
                 meta_out[content_name] = all_text_content[0]
+
+        if self.meta_name in ('xml', 'xmlelsevier'):
+            meta_out['body_links'] = extract_doi_links(
+                self._extract_body_plaintext())
+            meta_out['ack_links'] = extract_doi_links(
+                meta_out.get('acknowledgements', ''))
 
         return meta_out
 
@@ -1266,6 +1339,13 @@ def extract_content(input_list, **kwargs):
                             # values can be strings or, for dataset, a list
                             if isinstance(dict_item[item], str):
                                 dict_item[item] += ' ' + parsed_content[item]
+                            elif item in ('body_links', 'ack_links'):
+                                seen = set(
+                                    value.lower() for value in dict_item[item])
+                                for value in parsed_content[item]:
+                                    if value.lower() not in seen:
+                                        dict_item[item].append(value)
+                                        seen.add(value.lower())
                             else:
                                 dict_item[item] += parsed_content[item]
                         else:

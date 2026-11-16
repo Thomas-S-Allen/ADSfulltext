@@ -1,0 +1,13 @@
+<article xmlns:xlink="http://www.w3.org/1999/xlink">
+  <body>
+    <p>Body mentions 10.1234/BODY.ONE and https://doi.org/10.1234/body.one.</p>
+    <p>Data also appear at doi:10 .17909 / qk5z–7p30.</p>
+    <p><ext-link xlink:href="https://doi.org/10.8888/attribute-only">Attribute-only link</ext-link></p>
+    <ack><p>Credit: http://dx.doi.org/10.5678/ACK(ONE).</p></ack>
+    <sec sec-type="data-availability">
+      <p>DAS DOI 10.9999/das-only.</p>
+      <named-content content-type="dataset" xlink:href="dataset-id">Dataset label</named-content>
+    </sec>
+    <ref-list><ref><p>Reference DOI 10.7777/reference-only.</p></ref></ref-list>
+  </body>
+</article>

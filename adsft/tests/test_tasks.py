@@ -92,6 +92,8 @@ class TestWorkers(unittest.TestCase):
 
                     output_msg = task_output_results.call_args[0][0]
                     self.assertNotIn('das', output_msg)
+                    self.assertNotIn('body_links', output_msg)
+                    self.assertNotIn('ack_links', output_msg)
 
     def test_task_extract_forwards_das(self):
         with patch('adsft.writer.write_content', return_value=None) as task_write_text:
@@ -115,6 +117,25 @@ class TestWorkers(unittest.TestCase):
                     output_msg = task_output_results.call_args[0][0]
                     self.assertIn('das', output_msg)
                     self.assertIn('DAS from section type dataAvailability.', output_msg['das'])
+
+    def test_task_extract_does_not_forward_doi_link_metadata(self):
+        extracted = {
+            'bibcode': 'fta',
+            'fulltext': 'Body text',
+            'body_links': ['https://doi.org/10.1234/body'],
+            'ack_links': ['https://doi.org/10.5678/credit'],
+        }
+        with patch('adsft.extraction.extract_content', return_value=[extracted]):
+            with patch('adsft.writer.write_content', return_value=None):
+                with patch.object(tasks.task_output_results, 'delay',
+                                  return_value=None) as output_results:
+                    with patch.object(tasks.task_identify_facilities, 'delay',
+                                      return_value=None):
+                        tasks.task_extract({'unused': True})
+
+        output_msg = output_results.call_args[0][0]
+        self.assertNotIn('body_links', output_msg)
+        self.assertNotIn('ack_links', output_msg)
 
     def test_task_extract_forwards_mast_dataset_doi_from_das(self):
         with patch('adsft.writer.write_content', return_value=None) as task_write_text:
@@ -161,6 +182,8 @@ class TestWorkers(unittest.TestCase):
                         self.assertTrue(identify_facilities.called)
                         self.assertTrue(task_write_text.called)
                         actual = task_write_text.call_args[0][0]
+                        self.assertNotIn('body_links', actual)
+                        self.assertNotIn('ack_links', actual)
                         #self.assertEqual(u'Introduction\nTHIS IS AN INTERESTING TITLE\n', actual['fulltext']) # PDFBox
                         self.assertEqual(u'Introduction THIS IS AN INTERESTING TITLE', actual['fulltext']) # pdftotext
                         if self.grobid_service is not None:

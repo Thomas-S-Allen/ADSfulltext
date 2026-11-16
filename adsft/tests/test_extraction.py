@@ -10,7 +10,73 @@ from adsft.tests import test_base
 from adsputils import load_config
 import unittest
 import httpretty
+from mock import Mock, patch
 from requests.exceptions import HTTPError
+
+
+class TestDOILinkExtraction(unittest.TestCase):
+
+    def test_supported_plaintext_forms_are_normalized_and_deduplicated(self):
+        text = (
+            u'10.1234/ABC.def, doi:10.2345/UPPER; '
+            u'https://doi.org/10.3456/url. '
+            u'http://dx.doi.org/10.4567/legacy(ONE). '
+            u'10 .17909 / qk5z–7p30 and 10.1234/abc.DEF '
+            u'１０．６７８９／fullwidth'
+        )
+
+        self.assertEqual([
+            u'https://doi.org/10.1234/ABC.def',
+            u'https://doi.org/10.2345/UPPER',
+            u'https://doi.org/10.3456/url',
+            u'https://doi.org/10.4567/legacy(ONE)',
+            u'https://doi.org/10.17909/qk5z-7p30',
+            u'https://doi.org/10.6789/fullwidth',
+        ], extraction.extract_doi_links(text))
+
+    def test_sentence_parentheses_and_malformed_values(self):
+        text = (
+            u'(10.1234/surrounded). 10.1234/kept(two); '
+            u'10.123/nope https://example.org/not-a-doi'
+        )
+
+        self.assertEqual([
+            u'https://doi.org/10.1234/surrounded',
+            u'https://doi.org/10.1234/kept(two)',
+        ], extraction.extract_doi_links(text))
+
+    def test_non_xml_extractors_do_not_add_doi_link_fields(self):
+        fixture = os.path.realpath(os.path.join(
+            os.path.dirname(__file__),
+            '../../tests/test_unit/stub_data/test_doi_links.xml'))
+
+        for file_format in ('txt', 'ocr', 'html', 'teixml'):
+            content = extraction.extract_content([{
+                'ft_source': fixture, 'file_format': file_format,
+                'provider': 'MNRAS', 'bibcode': 'test',
+            }])[0]
+            self.assertNotIn('body_links', content)
+            self.assertNotIn('ack_links', content)
+
+        process = Mock()
+        process.communicate.return_value = (b'10.1234/pdf-only', b'')
+        process.returncode = 0
+        with patch('adsft.extraction.Popen', return_value=process):
+            content = extraction.PDFExtractor({
+                'ft_source': fixture, 'extract_pdf_script': '/unused',
+            }).extract_multi_content()
+        self.assertNotIn('body_links', content)
+        self.assertNotIn('ack_links', content)
+
+        response = Mock(status_code=200, content=b'10.1234/grobid-only',
+                        text='10.1234/grobid-only')
+        with patch('adsft.extraction.requests.post', return_value=response):
+            content = extraction.GrobidPDFExtractor({
+                'ft_source': fixture, 'grobid_service': 'http://grobid',
+            }).extract_multi_content()
+        self.assertNotIn('body_links', content)
+        self.assertNotIn('ack_links', content)
+
 
 class TestXMLExtractorBase(test_base.TestUnit):
     """
@@ -122,6 +188,52 @@ class TestXMLExtractor(TestXMLExtractorBase):
         content = extraction.extract_content([self.dict_item])
         # does the fulltext contain two copies of the file's contents
         self.assertEqual(2, content[0]['fulltext'].count('Entry 1'))
+
+    def test_plaintext_doi_links_are_scoped_to_body_and_acknowledgements(self):
+        fixture = os.path.join(
+            self.proj_home, 'tests/test_unit/stub_data/test_doi_links.xml')
+        expected_body = [
+            u'https://doi.org/10.1234/BODY.ONE',
+            u'https://doi.org/10.17909/qk5z-7p30',
+        ]
+        expected_ack = [u'https://doi.org/10.5678/ACK(ONE)']
+
+        for extractor_name in ('xml', 'elsevier'):
+            for parser_name in self.preferred_parser_names:
+                dict_item = {'ft_source': fixture, 'file_format': 'xml',
+                             'provider': 'Elsevier' if extractor_name == 'elsevier' else 'MNRAS',
+                             'bibcode': 'test'}
+                extractor = extraction.EXTRACTOR_FACTORY[extractor_name](dict_item)
+                content = extractor.extract_multi_content(
+                    preferred_parser_names=(parser_name,))
+
+                self.assertEqual(expected_body, content['body_links'])
+                self.assertEqual(expected_ack, content['ack_links'])
+                all_links = ' '.join(
+                    content['body_links'] + content['ack_links'])
+                self.assertNotIn('10.9999', all_links)
+                self.assertNotIn('10.7777', all_links)
+                self.assertNotIn('10.8888', all_links)
+                self.assertEqual('dataset-id', content['dataset'][0])
+                self.assertIn('DAS DOI 10.9999/das-only.', content['das'])
+                self.assertIn('Credit: http://dx.doi.org/10.5678/ACK(ONE).',
+                              content['acknowledgements'])
+
+    def test_doi_links_merge_stably_across_multiple_xml_files(self):
+        fixture = os.path.join(
+            self.proj_home, 'tests/test_unit/stub_data/test_doi_links.xml')
+        dict_item = {'ft_source': fixture + ',' + fixture,
+                     'file_format': 'xml', 'provider': 'MNRAS',
+                     'bibcode': 'test'}
+
+        content = extraction.extract_content([dict_item])[0]
+
+        self.assertEqual([
+            u'https://doi.org/10.1234/BODY.ONE',
+            u'https://doi.org/10.17909/qk5z-7p30',
+        ], content['body_links'])
+        self.assertEqual([u'https://doi.org/10.5678/ACK(ONE)'],
+                         content['ack_links'])
 
 
     def test_that_we_can_extract_using_settings_template(self):
@@ -665,7 +777,8 @@ class TestXMLElsevierExtractor(TestXMLExtractorBase):
                 func = self.assertCountEqual
             else:
                 func = self.assertItemsEqual
-            func(['fulltext', 'acknowledgements', 'das', 'dataset'],
+            func(['fulltext', 'acknowledgements', 'das', 'dataset',
+                  'body_links', 'ack_links'],
                  content.keys(),
                  content.keys())
 
@@ -1166,6 +1279,8 @@ class TestHTTPExtractor(test_base.TestUnit):
         content = self.extractor.extract_multi_content()
 
         self.assertEqual(content['fulltext'], self.body_content)
+        self.assertNotIn('body_links', content)
+        self.assertNotIn('ack_links', content)
 
 if __name__ == '__main__':
     unittest.main()
